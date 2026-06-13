@@ -85,5 +85,10 @@ export async function decompressBlob(data: Buffer): Promise<Buffer> {
   }
   if (isBrotli) return brDecompress(data)
   if (isGzip) return gunzipAsync(data)
-  throw new Error('Unknown compression format')
+
+  if (data.length < 100) {
+    const asStr = data.toString('utf-8').slice(0, 50)
+    throw new Error(`Unknown compression format. First bytes: ${data.slice(0, 8).toString('hex')}, preview: ${asStr}`)
+  }
+  throw new Error(`Unknown compression format. First bytes: ${data.slice(0, 8).toString('hex')}`)
 }

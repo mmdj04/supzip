@@ -9,49 +9,33 @@ export interface TagBlob {
   files: Array<{ path: string; data: Buffer }>
 }
 
-export interface ArchiveDataV2 {
-  version: 2
+export interface ArchiveDataV3 {
+  version: 3
   tags: Array<{
     tag: string
+    flags: number
     fields: Array<{
       path: string
       offset: number
       length: number
     }>
     blobSize: number
-    compressedBlob: Buffer
+    data: Buffer
   }>
 }
 
-export interface ArchiveData {
-  version: 1
-  dicts: DictEntry[]
-  chunks: ChunkEntry[]
-  files: FileIndex[]
-}
-
-export interface DictEntry {
-  tag: string
-  data: Buffer
-}
-
-export interface ChunkEntry {
-  hash: Buffer
-  langTag: string
-  compressedData: Buffer
-}
-
-export interface FileIndex {
-  path: string
-  chunkHashes: Buffer[]
-}
-
-export interface Stats {
-  fileCount: number
-  originalBytes: number
-  compressedBytes: number
-  ratio: number
-}
+export const FLAG_COMPRESSED = 1
+export const RAW_TAG = '__raw__'
+export const SUPPORTED_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.md', '.mdx',
+  '.html', '.htm', '.css', '.scss', '.less',
+  '.json', '.yaml', '.yml', '.xml', '.svg',
+  '.py', '.rb', '.java', '.kt', '.swift', '.go', '.rs',
+  '.c', '.h', '.cpp', '.hpp', '.cs', '.php',
+  '.r', '.sh', '.bash', '.zsh',
+  '.toml', '.tf',
+])
 
 export const LANG_TAGS: Record<string, string> = {
   '.ts': '.ts',

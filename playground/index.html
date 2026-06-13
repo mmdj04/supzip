@@ -128,8 +128,29 @@ function r32LE(buf, off) { return new DataView(buf.buffer, off, 4).getUint32(0, 
 function utf8Enc(s) { return new TextEncoder().encode(s) }
 function utf8Dec(buf) { return new TextDecoder().decode(buf) }
 
-// ===== ARCHIVE FORMAT V2 =====
+// ===== ARCHIVE FORMAT V3 =====
 function hex(h) { return Array.from(h).map(b => b.toString(16).padStart(2,'0')).join('') }
+const FLAG_COMPRESSED = 1
+const RAW_TAG = '__raw__'
+
+const TEXT_EXTS = new Set([
+  '.ts','.tsx','.js','.jsx','.mjs','.cjs',
+  '.md','.mdx','.html','.htm','.css','.scss','.less',
+  '.json','.yaml','.yml','.xml','.svg',
+  '.py','.rb','.java','.kt','.swift','.go','.rs',
+  '.c','.h','.cpp','.hpp','.cs','.php','.r',
+  '.sh','.bash','.zsh','.toml','.tf',
+])
+
+function getTag(path) {
+  const dot = path.lastIndexOf('.')
+  if (dot === -1) return '__'
+  const ext = path.slice(dot).toLowerCase()
+  if (ext === '.ts' || ext === '.tsx') return '.ts'
+  if (ext === '.js' || ext === '.jsx') return '.js'
+  if (TEXT_EXTS.has(ext)) return ext
+  return RAW_TAG
+}
 
 async function buildArchive(tags) {
   const parts = []
@@ -137,11 +158,12 @@ async function buildArchive(tags) {
   const wstr = s => { const b = utf8Enc(s); push(u32LE(b.length)); push(b) }
 
   push(utf8Enc('SUPZ'))
-  push(u32LE(2))
+  push(u32LE(3))
   push(u32LE(0))
 
-  for (const { tag, fields, blobSize, compressedBlob } of tags) {
+  for (const { tag, flags, fields, blobSize, data } of tags) {
     wstr(tag)
+    push(u32LE(flags))
     push(u32LE(blobSize))
     push(u32LE(fields.length))
     for (const f of fields) {
@@ -149,8 +171,8 @@ async function buildArchive(tags) {
       push(u32LE(f.offset))
       push(u32LE(f.length))
     }
-    push(u32LE(compressedBlob.length))
-    push(compressedBlob)
+    push(u32LE(data.length))
+    push(data)
   }
 
   return new Blob([new Blob(parts)])
@@ -162,7 +184,7 @@ async function parseArchive(buf) {
   if (magic !== 'SUPZ') throw new Error('Invalid archive')
   o += 4
   const ver = r32LE(buf, o); o += 4
-  if (ver < 2) throw new Error('Unsupported version (only v2+)')
+  if (ver < 3) throw new Error('Unsupported version (only v3+)')
   o += 4
 
   const tags = []
@@ -170,6 +192,7 @@ async function parseArchive(buf) {
   while (o < buf.length) {
     const tagLen = r32LE(buf, o); o += 4
     const tag = utf8Dec(buf.subarray(o, o + tagLen)); o += tagLen
+    const flags = r32LE(buf, o); o += 4
     const blobSize = r32LE(buf, o); o += 4
     const numFiles = r32LE(buf, o); o += 4
 
@@ -182,9 +205,9 @@ async function parseArchive(buf) {
       fields.push({ path, offset, length })
     }
 
-    const compLen = r32LE(buf, o); o += 4
-    const compressedBlob = buf.subarray(o, o + compLen); o += compLen
-    tags.push({ tag, fields, blobSize, compressedBlob })
+    const dataLen = r32LE(buf, o); o += 4
+    const data = buf.subarray(o, o + dataLen); o += dataLen
+    tags.push({ tag, flags, fields, blobSize, data })
   }
 
   return { tags }
@@ -245,15 +268,6 @@ dz.addEventListener('dragleave', () => dz.classList.remove('dragover'))
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); handleFiles(e.dataTransfer.files) })
 dz.addEventListener('click', () => document.getElementById('fileInput').click())
 
-function getTag(path) {
-  return path.endsWith('.ts') || path.endsWith('.tsx') ? '.ts' :
-         path.endsWith('.js') || path.endsWith('.jsx') ? '.js' :
-         path.endsWith('.md') ? '.md' :
-         path.endsWith('.html') ? '.html' :
-         path.endsWith('.css') ? '.css' :
-         path.endsWith('.json') ? '.json' : '__'
-}
-
 async function runPack() {
   if (fileStore.size === 0) return
   const btn = document.getElementById('packBtn')
@@ -261,22 +275,27 @@ async function runPack() {
   log('Iniciando compressão...')
 
   try {
-    const grouped = new Map()
+    const textGroups = new Map()
+    const rawFiles = []
     let origBytes = 0
 
     for (const [path, data] of fileStore) {
       origBytes += data.length
       const tag = getTag(path)
-      if (!grouped.has(tag)) grouped.set(tag, [])
-      grouped.get(tag).push({ path, data })
+      if (tag === RAW_TAG) {
+        rawFiles.push({ path, data })
+      } else {
+        if (!textGroups.has(tag)) textGroups.set(tag, [])
+        textGroups.get(tag).push({ path, data })
+      }
     }
 
-    log(`Original: ${fmt(origBytes)} — ${fileStore.size} arquivos em ${grouped.size} grupos`, 'ok')
+    log(`Original: ${fmt(origBytes)} — ${fileStore.size} arquivos`, 'ok')
 
     const tags = []
     let compBytes = 0
 
-    for (const [tag, files] of grouped) {
+    for (const [tag, files] of textGroups) {
       const blobs = []
       const fields = []
       let offset = 0
@@ -286,9 +305,23 @@ async function runPack() {
         offset += f.data.length
       }
       const blob = concatU8(blobs)
-      const compressedBlob = fflate.gzipSync(blob, { level: 9 })
-      tags.push({ tag, fields, blobSize: blob.length, compressedBlob })
-      compBytes += compressedBlob.length
+      const compressed = fflate.gzipSync(blob, { level: 9 })
+      tags.push({ tag, flags: FLAG_COMPRESSED, fields, blobSize: blob.length, data: compressed })
+      compBytes += compressed.length
+    }
+
+    if (rawFiles.length > 0) {
+      const blobs = []
+      const fields = []
+      let offset = 0
+      for (const f of rawFiles) {
+        blobs.push(f.data)
+        fields.push({ path: f.path, offset, length: f.data.length })
+        offset += f.data.length
+      }
+      const blob = concatU8(blobs)
+      tags.push({ tag: RAW_TAG, flags: 0, fields, blobSize: blob.length, data: blob })
+      compBytes += blob.length
     }
 
     const archiveBlob = await buildArchive(tags)
@@ -357,7 +390,9 @@ async function runUnpack() {
     const extracted = []
 
     for (const tag of archive.tags) {
-      const blob = fflate.gunzipSync(tag.compressedBlob)
+      const isCompressed = (tag.flags & FLAG_COMPRESSED) !== 0
+      const blob = isCompressed ? fflate.gunzipSync(tag.data) : tag.data
+
       for (const f of tag.fields) {
         const fileData = blob.subarray(f.offset, f.offset + f.length)
         extracted.push({ path: f.path, data: new Blob([fileData]) })

@@ -1,0 +1,28 @@
+{
+  "name": "supzip",
+  "version": "0.1.0",
+  "description": "Ultra-efficient code compressor with CDC deduplication + per-language Zstandard dictionaries",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "supz": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts"
+  },
+  "keywords": ["compression", "deduplication", "zip", "code-compression", "zstd"],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "tsx": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

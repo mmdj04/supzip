@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.supz
+*.supzd

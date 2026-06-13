@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SupZIP Playground</title>
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --orange: #d29922; --red: #f85149;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh;
+}
+.header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 20px; font-weight: 600; }
+.header span { color: var(--text2); font-size: 14px; }
+.container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.card h2 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text2); margin-bottom: 12px; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.btn {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+  background: #21262d; color: var(--text); cursor: pointer; font-size: 13px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { background: #30363d; }
+.btn-primary { background: #1f6feb; border-color: #1f6feb; color: white; }
+.btn-primary:hover { background: #388bfd; }
+.btn-green { background: #238636; border-color: #238636; color: white; }
+.btn-green:hover { background: #2ea043; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.file-list { max-height: 400px; overflow-y: auto; font-size: 13px; }
+.file-list .file-item { padding: 4px 0; display: flex; align-items: center; gap: 8px; }
+.file-list .file-item .remove { cursor: pointer; color: var(--red); font-size: 16px; line-height: 1; }
+.file-list .file-item .size { color: var(--text2); margin-left: auto; font-size: 12px; }
+.empty-state { color: var(--text2); font-size: 14px; text-align: center; padding: 32px 0; }
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: 8px; padding: 24px;
+  text-align: center; cursor: pointer; transition: all .2s; margin-bottom: 12px;
+}
+.drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(88,166,255,.05); }
+.drop-zone p { color: var(--text2); font-size: 13px; }
+.drop-zone .icon { font-size: 32px; margin-bottom: 8px; }
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat-box { text-align: center; padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+.stat-box .value { font-size: 24px; font-weight: 700; }
+.stat-box .label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; }
+.stat-box.orig .value { color: var(--accent); }
+.stat-box.dedup .value { color: var(--green); }
+.stat-box.comp .value { color: var(--orange); }
+.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.detail-row:last-child { border-bottom: none; }
+.detail-row .label { color: var(--text2); }
+#log { max-height: 200px; overflow-y: auto; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 12px; background: #010409; border-radius: 6px; padding: 8px; margin-top: 12px; }
+#log div { padding: 2px 0; }
+#log .info { color: var(--accent); }
+#log .ok { color: var(--green); }
+#log .warn { color: var(--orange); }
+#log .err { color: var(--red); }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⬡ SupZIP</h1>
+  <span>Playground — compressão com CDC + deduplicação</span>
+</div>
+
+<div class="container">
+  <div class="card">
+    <h2>Arquivos</h2>
+    <div class="toolbar">
+      <button class="btn" onclick="document.getElementById('fileInput').click()">📁 Adicionar arquivos</button>
+      <button class="btn" onclick="loadSampleData()">📦 Carregar exemplos</button>
+      <button class="btn" id="dirBtn" onclick="pickDirectory()" title="Chromium/Edge apenas">📂 Abrir pasta</button>
+    </div>
+    <input type="file" id="fileInput" multiple hidden onchange="handleFiles(this.files)">
+    <div class="drop-zone" id="dropZone">
+      <div class="icon">📄</div>
+      <p>Arraste arquivos aqui ou clique em "Adicionar arquivos"</p>
+    </div>
+    <div class="file-list" id="fileList"><div class="empty-state">Nenhum arquivo carregado</div></div>
+    <div class="toolbar" style="margin-top:12px">
+      <button class="btn btn-green" id="packBtn" onclick="runPack()" disabled>⚡ Pack</button>
+      <button class="btn" id="downloadBtn" onclick="downloadArchive()" disabled>⬇ Download .supz</button>
+    </div>
+  </div>
+
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>Resultados</h2>
+      <div class="stats-grid" id="stats">
+        <div class="stat-box orig"><div class="value" id="origVal">-</div><div class="label">Original</div></div>
+        <div class="stat-box dedup"><div class="value" id="dedupVal">-</div><div class="label">Dedup</div></div>
+        <div class="stat-box comp"><div class="value" id="compVal">-</div><div class="label">Comprimido</div></div>
+      </div>
+      <div id="details"></div>
+    </div>
+    <div class="card">
+      <h2>Unpack</h2>
+      <div class="toolbar">
+        <button class="btn" onclick="document.getElementById('archiveInput').click()">📥 Carregar .supz</button>
+        <button class="btn btn-primary" id="unpackBtn" onclick="runUnpack()" disabled>🔓 Unpack</button>
+      </div>
+      <input type="file" id="archiveInput" accept=".supz" hidden onchange="loadArchive(this.files[0])">
+      <div id="unpackResult"></div>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+// ===== UTILITIES =====
+function fmt(n) {
+  if (n < 1024) return n + ' B'
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1048576).toFixed(2) + ' MB'
+}
+function log(msg, type = 'info') { document.getElementById('log').insertAdjacentHTML('afterbegin', `<div class="${type}">${msg}</div>`) }
+function u32LE(v) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, true); return b }
+function r32LE(buf, off) { return new DataView(buf.buffer, off, 4).getUint32(0, true) }
+function utf8Enc(s) { return new TextEncoder().encode(s) }
+function utf8Dec(buf) { return new TextDecoder().decode(buf) }
+
+// ===== BUZHASH CDC (content-defined chunking) =====
+const WINDOW = 48
+const TABLE = new Uint32Array(256)
+const ROT_TABLE = new Uint32Array(256)
+;(() => {
+  for (let i = 0; i < 256; i++) {
+    let v = ((i * 1103515245 + 12345) >>> 0)
+    v = ((v << 16) | (v >>> 16)) >>> 0
+    TABLE[i] = v
+    let rv = v
+    for (let j = 0; j < WINDOW - 1; j++) rv = ((rv << 1) | (rv >>> 31)) >>> 0
+    ROT_TABLE[i] = rv
+  }
+})()
+
+function chunkData(data, opts = {}) {
+  const avg = opts.avgChunkSize || 4096, minS = opts.minChunkSize || 1024, maxS = opts.maxChunkSize || 16384
+  const bits = Math.round(Math.log2(avg)), mask = (1 << bits) - 1
+  const len = data.length
+  if (len <= maxS) { return [data] }
+  const out = []
+  let cut = 0
+  while (cut < len) {
+    const end = findBoundary(data, cut, len, minS, maxS, mask)
+    out.push(data.subarray(cut, end))
+    cut = end
+  }
+  return out
+}
+
+function findBoundary(data, start, end, minS, maxS, mask) {
+  if (start + maxS >= end) return end
+  const sStart = start + minS, sEnd = Math.min(start + maxS, end)
+  if (sStart >= sEnd) return sEnd
+  let h = initHash(data, sStart), pos = sStart
+  while (pos < sEnd) {
+    if ((h & mask) === 0) return pos
+    pos++
+    if (pos < sEnd) h = slideHash(h, data[pos - WINDOW - 1], data[pos - 1])
+  }
+  return sEnd
+}
+
+function initHash(data, pos) {
+  const w = new Uint8Array(WINDOW)
+  w.set(data.subarray(pos - WINDOW, pos))
+  let h = 0
+  for (let i = 0; i < WINDOW; i++) { h = ((h << 1) | (h >>> 31)) >>> 0; h ^= TABLE[w[i]] }
+  return h >>> 0
+}
+
+function slideHash(h, outB, inB) {
+  h ^= ROT_TABLE[outB]; h = ((h << 1) | (h >>> 31)) >>> 0; h ^= TABLE[inB]
+  return h >>> 0
+}
+
+// ===== SHA-256 (Web Crypto) =====
+async function sha256(data) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+}
+
+// ===== ARCHIVE FORMAT =====
+function hex(h) { return Array.from(h).map(b => b.toString(16).padStart(2,'0')).join('') }
+
+async function buildArchive(files, chunks) {
+  const parts = []
+  const push = b => parts.push(b)
+
+  push(new TextEncoder().encode('SUPZ'))
+  push(u32LE(1))
+  push(u32LE(0))
+
+  push(u32LE(0))
+
+  const chunkArr = Array.from(chunks.entries())
+  push(u32LE(chunkArr.length))
+  for (const [hashHex, { data, tag }] of chunkArr) {
+    const hb = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) hb[i] = parseInt(hashHex.slice(i * 2, i * 2 + 2), 16)
+    push(hb)
+    const tb = utf8Enc(tag)
+    push(new Uint8Array([tb.length]))
+    push(tb)
+    push(u32LE(data.length))
+    push(data)
+  }
+
+  push(u32LE(files.length))
+  for (const f of files) {
+    const pb = utf8Enc(f.path)
+    push(u32LE(pb.length))
+    push(pb)
+    push(u32LE(f.hashes.length))
+    for (const h of f.hashes) push(h)
+  }
+
+  return new Blob([new Blob(parts)])
+}
+
+async function parseArchive(buf) {
+  let o = 0
+  const magic = utf8Dec(buf.subarray(0, 4))
+  if (magic !== 'SUPZ') throw new Error('Invalid archive')
+  o += 4
+  const ver = r32LE(buf, o); o += 4
+  if (ver !== 1) throw new Error('Unsupported version')
+  o += 4
+
+  const numDicts = r32LE(buf, o); o += 4
+  const dicts = new Map()
+  for (let i = 0; i < numDicts; i++) {
+    const tl = buf[o]; o += 1
+    const tag = utf8Dec(buf.subarray(o, o + tl)); o += tl
+    const dl = r32LE(buf, o); o += 4
+    dicts.set(tag, buf.subarray(o, o + dl))
+    o += dl
+  }
+
+  const numChunks = r32LE(buf, o); o += 4
+  const chunks = new Map()
+  for (let i = 0; i < numChunks; i++) {
+    const hash = buf.subarray(o, o + 32); o += 32
+    const tl = buf[o]; o += 1
+    const tag = utf8Dec(buf.subarray(o, o + tl)); o += tl
+    const dl = r32LE(buf, o); o += 4
+    chunks.set(hex(hash), { data: buf.subarray(o, o + dl), tag })
+    o += dl
+  }
+
+  const numFiles = r32LE(buf, o); o += 4
+  const files = []
+  for (let i = 0; i < numFiles; i++) {
+    const pl = r32LE(buf, o); o += 4
+    const path = utf8Dec(buf.subarray(o, o + pl)); o += pl
+    const nh = r32LE(buf, o); o += 4
+    const hashes = []
+    for (let j = 0; j < nh; j++) { hashes.push(buf.subarray(o, o + 32)); o += 32 }
+    files.push({ path, hashes })
+  }
+
+  return { files, chunks, dicts }
+}
+
+// ===== PACK =====
+const fileStore = new Map()
+
+function renderFiles() {
+  const el = document.getElementById('fileList')
+  if (fileStore.size === 0) { el.innerHTML = '<div class="empty-state">Nenhum arquivo carregado</div>'; return }
+  el.innerHTML = Array.from(fileStore.entries())
+    .map(([path, data]) =>
+      `<div class="file-item">
+        <span class="remove" onclick="removeFile('${path}')">✕</span>
+        <span>${path}</span>
+        <span class="size">${fmt(data.length)}</span>
+      </div>`
+    ).join('')
+  document.getElementById('packBtn').disabled = false
+}
+
+function removeFile(path) { fileStore.delete(path); renderFiles(); if (fileStore.size === 0) document.getElementById('packBtn').disabled = true }
+
+function handleFiles(files) {
+  for (const f of files) {
+    const reader = new FileReader()
+    reader.onload = () => { fileStore.set(f.webkitRelativePath || f.name, new Uint8Array(reader.result)); renderFiles() }
+    reader.readAsArrayBuffer(f)
+  }
+}
+
+async function pickDirectory() {
+  if (!window.showDirectoryPicker) { log('showDirectoryPicker não suportado neste navegador', 'warn'); return }
+  try {
+    const dir = await window.showDirectoryPicker({ mode: 'read' })
+    await readDir(dir, '')
+  } catch (e) { if (e.name !== 'AbortError') log('Erro: ' + e.message, 'err') }
+}
+
+async function readDir(dir, prefix) {
+  for await (const entry of dir.values()) {
+    if (entry.kind === 'file' && /\.(ts|js|tsx|jsx|md|html|css|json|py|rs|go|java|rb|sh|yml|yaml|toml|xml|svg|scss|less|c|cpp|h|hpp|cs|php|kt|swift|r|tf|dockerfile)$/i.test(entry.name)) {
+      const file = await entry.getFile()
+      const data = new Uint8Array(await file.arrayBuffer())
+      fileStore.set(prefix + entry.name, data)
+    } else if (entry.kind === 'directory' && !['node_modules','.git','dist','build','.next','.nuxt','.cache','__pycache__'].includes(entry.name)) {
+      await readDir(entry, prefix + entry.name + '/')
+    }
+  }
+  renderFiles()
+}
+
+// Drop zone
+const dz = document.getElementById('dropZone')
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover') })
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'))
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); handleFiles(e.dataTransfer.files) })
+dz.addEventListener('click', () => document.getElementById('fileInput').click())
+
+async function runPack() {
+  if (fileStore.size === 0) return
+  const btn = document.getElementById('packBtn')
+  btn.disabled = true; btn.textContent = '⏳ Comprimindo...'
+  log('Iniciando compressão...')
+
+  try {
+    const chunks = new Map()
+    const files = []
+    let origBytes = 0
+
+    for (const [path, data] of fileStore) {
+      origBytes += data.length
+      const tag = path.endsWith('.ts') || path.endsWith('.tsx') ? '.ts' :
+                  path.endsWith('.js') || path.endsWith('.jsx') ? '.js' :
+                  path.endsWith('.md') ? '.md' :
+                  path.endsWith('.html') ? '.html' :
+                  path.endsWith('.css') ? '.css' :
+                  path.endsWith('.json') ? '.json' : '__'
+      const pieces = chunkData(data)
+      const hashes = []
+
+      for (const piece of pieces) {
+        const h = await sha256(piece)
+        const hh = hex(h)
+        hashes.push(h)
+        if (!chunks.has(hh)) chunks.set(hh, { data: piece, tag })
+      }
+
+      files.push({ path, hashes })
+    }
+
+    log(`Original: ${fmt(origBytes)} — ${chunks.size} chunks únicos de ${files.length} arquivos`, 'ok')
+
+    let compBytes = 0
+    for (const [hh, { data, tag }] of chunks) {
+      const gz = fflate.gzipSync(data, { level: 9 })
+      chunks.set(hh, { data: gz, tag })
+      compBytes += gz.length
+    }
+
+    log(`Comprimido: ${fmt(compBytes)} (${((1 - compBytes / origBytes) * 100).toFixed(1)}% menor)`)
+
+    const blob = await buildArchive(files, chunks)
+    const totalBytes = blob.size + chunks.size * 33
+
+    const dedupX = (origBytes / [...chunks.values()].reduce((s, c) => s + c.data.length, 0)).toFixed(2)
+    const compX = (origBytes / (compBytes)).toFixed(2)
+
+    document.getElementById('origVal').textContent = fmt(origBytes)
+    document.getElementById('dedupVal').textContent = `${dedupX}x`
+    document.getElementById('compVal').textContent = `${compX}x`
+
+    document.getElementById('details').innerHTML = `
+      <div class="detail-row"><span class="label">Arquivos</span><span>${files.length}</span></div>
+      <div class="detail-row"><span class="label">Chunks únicos</span><span>${chunks.size}</span></div>
+      <div class="detail-row"><span class="label">Original</span><span>${fmt(origBytes)}</span></div>
+      <div class="detail-row"><span class="label">Comprimido</span><span>${fmt(totalBytes)}</span></div>
+      <div class="detail-row"><span class="label">Ratio total</span><span><strong>${(origBytes / totalBytes).toFixed(2)}x</strong></span></div>
+    `
+
+    window._archiveBlob = blob
+    window._archiveFiles = files.length
+    document.getElementById('downloadBtn').disabled = false
+    log('✅ Pack concluído!', 'ok')
+  } catch (e) {
+    log(`Erro: ${e.message}`, 'err')
+    console.error(e)
+  }
+  btn.disabled = false; btn.textContent = '⚡ Pack'
+}
+
+function downloadArchive() {
+  if (!window._archiveBlob) return
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(window._archiveBlob)
+  a.download = `archive.supz`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+// ===== UNPACK =====
+let _loadedArchive = null
+
+function loadArchive(file) {
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    _loadedArchive = new Uint8Array(reader.result)
+    document.getElementById('unpackBtn').disabled = false
+    document.getElementById('unpackResult').textContent = `📦 ${file.name} (${fmt(_loadedArchive.length)}) carregado`
+    log('Archive carregado para unpack', 'info')
+  }
+  reader.readAsArrayBuffer(file)
+}
+
+async function runUnpack() {
+  if (!_loadedArchive) return
+  const btn = document.getElementById('unpackBtn')
+  btn.disabled = true; btn.textContent = '⏳ Extraindo...'
+
+  try {
+    const archive = await parseArchive(_loadedArchive)
+    const extracted = []
+
+    for (const f of archive.files) {
+      const pieces = []
+      for (const h of f.hashes) {
+        const hh = hex(h)
+        const entry = archive.chunks.get(hh)
+        if (!entry) throw new Error(`Chunk ${hh} não encontrado`)
+        const raw = fflate.gunzipSync(entry.data)
+        pieces.push(raw)
+      }
+      extracted.push({ path: f.path, data: new Blob(pieces) })
+    }
+
+    document.getElementById('unpackResult').innerHTML = `
+      <div style="margin-top:8px">${extracted.length} arquivos extraídos:</div>
+      ${extracted.map(e => `<div class="detail-row"><span>${e.path}</span><span>${fmt(e.data.size)}</span></div>`).join('')}
+      <div class="toolbar" style="margin-top:8px">
+        <button class="btn" onclick="downloadExtracted()">⬇ Download todos (.tar)</button>
+      </div>
+    `
+    window._extracted = extracted
+    log(`✅ ${extracted.length} arquivos extraídos com sucesso!`, 'ok')
+  } catch (e) {
+    log(`Erro unpack: ${e.message}`, 'err')
+    console.error(e)
+  }
+  btn.disabled = false; btn.textContent = '🔓 Unpack'
+}
+
+function downloadExtracted() {
+  if (!window._extracted) return
+  for (const f of window._extracted) {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(f.data)
+    a.download = f.path.replace(/\//g, '_')
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+}
+
+// ===== SAMPLE DATA =====
+function loadSampleData() {
+  const samples = {
+    'src/components/Button.tsx': `import React from 'react'
+import { cn } from '../lib/utils'
+import { logger } from '../lib/logger'
+import { cva } from 'class-variance-authority'
+
+const btnVariants = cva('btn-base', {
+  variants: {
+    variant: { primary: 'bg-blue text-white', secondary: 'bg-gray text-dark', outline: 'border border-blue text-blue', ghost: 'text-blue hover:bg-gray-100' },
+    size: { sm: 'px-2 py-1 text-sm', md: 'px-4 py-2 text-base', lg: 'px-6 py-3 text-lg' },
+  },
+  defaultVariants: { variant: 'primary', size: 'md' },
+})
+
+export function Button({ children, variant, size, className, disabled, onClick }) {
+  const cls = cn(btnVariants({ variant, size }), className, disabled && 'opacity-50 cursor-not-allowed')
+  return <button className={cls} disabled={disabled} onClick={() => { if (!disabled && onClick) { logger.info('Button', 'clicked'); onClick() } }}>{children}</button>
+}`,
+
+    'src/components/Card.tsx': `import React from 'react'
+import { cn } from '../lib/utils'
+import { logger } from '../lib/logger'
+
+export function Card({ title, children, className, variant = 'default', onClick }) {
+  const cls = cn(
+    'card rounded-lg border p-4',
+    variant === 'elevated' && 'shadow-lg',
+    variant === 'outlined' && 'border-2',
+    variant === 'flat' && 'border-0 bg-transparent',
+    onClick && 'cursor-pointer hover:shadow-md',
+    className,
+  )
+  return (
+    <div className={cls} onClick={() => { if (onClick) { logger.info('Card', 'clicked', title); onClick() } }}>
+      {title && <h3 className="text-lg font-semibold mb-2">{title}</h3>}
+      {children}
+    </div>
+  )
+}`,
+
+    'src/components/Modal.tsx': `import React, { useEffect, useRef } from 'react'
+import { cn } from '../lib/utils'
+import { logger } from '../lib/logger'
+
+export function Modal({ isOpen, onClose, title, children, size = 'md' }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (isOpen) { logger.info('Modal', 'opened', title); document.body.style.overflow = 'hidden' }
+    else document.body.style.overflow = ''
+    return () => { document.body.style.overflow = '' }
+  }, [isOpen, title])
+
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    if (isOpen) window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [isOpen, onClose])
+
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div ref={ref} className={cn('bg-white rounded-lg shadow-xl', size === 'sm' && 'w-96', size === 'md' && 'w-2/3', size === 'lg' && 'w-11/12')}>
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="text-xl font-semibold">{title}</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">&times;</button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>
+  )
+}`,
+
+    'src/components/Table.tsx': `import React from 'react'
+import { cn } from '../lib/utils'
+import { logger } from '../lib/logger'
+
+export function Table({ columns, data, onRowClick, className, striped = false }) {
+  return (
+    <div className={cn('overflow-x-auto rounded-lg border', className)}>
+      <table className="w-full text-left">
+        <thead className="bg-gray-100">
+          <tr>{columns.map((col, i) => <th key={i} className="px-4 py-3 font-semibold text-sm">{col.header}</th>)}</tr>
+        </thead>
+        <tbody>
+          {data.map((row, ri) => (
+            <tr key={ri} className={cn(striped && ri % 2 === 1 && 'bg-gray-50', onRowClick && 'cursor-pointer hover:bg-gray-100')}
+              onClick={() => { if (onRowClick) { logger.info('Table', 'row clicked', ri); onRowClick(row) } }}>
+              {columns.map((col, ci) => <td key={ci} className="px-4 py-2 text-sm">{col.accessor ? row[col.accessor] : row[ci]}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}`,
+
+    'src/components/Form.tsx': `import React, { useState } from 'react'
+import { logger } from '../lib/logger'
+
+export function Form({ fields, onSubmit, initialValues = {}, submitLabel = 'Enviar' }) {
+  const [values, setValues] = useState(initialValues)
+  const [errors, setErrors] = useState({})
+  const [submitting, setSubmitting] = useState(false)
+
+  const validate = () => {
+    const errs = {}
+    for (const f of fields) {
+      if (f.required && !values[f.name]) errs[f.name] = 'Campo obrigatório'
+      if (f.min && values[f.name] && values[f.name].length < f.min) errs[f.name] = 'Mínimo ' + f.min + ' caracteres'
+      if (f.pattern && values[f.name] && !f.pattern.test(values[f.name])) errs[f.name] = 'Formato inválido'
+    }
+    return errs
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const errs = validate()
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    setSubmitting(true)
+    try {
+      await onSubmit(values)
+      logger.info('Form', 'submitted successfully')
+    } catch (err) { logger.error('Form', 'submit failed', err) }
+    finally { setSubmitting(false) }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {fields.map(f => (
+        <div key={f.name}>
+          <label className="block text-sm font-medium mb-1">{f.label}{f.required && ' *'}</label>
+          {f.type === 'textarea'
+            ? <textarea className="w-full border rounded px-3 py-2" value={values[f.name] || ''} onChange={e => setValues({...values, [f.name]: e.target.value})} rows={f.rows || 3} />
+            : <input type={f.type || 'text'} className="w-full border rounded px-3 py-2" value={values[f.name] || ''} onChange={e => setValues({...values, [f.name]: e.target.value})} />}
+          {errors[f.name] && <p className="text-red-500 text-xs mt-1">{errors[f.name]}</p>}
+        </div>
+      ))}
+      <button type="submit" disabled={submitting} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50">{submitting ? '...' : submitLabel}</button>
+    </form>
+  )
+}`,
+
+    'src/lib/utils.ts': `export function cn(...classes) {
+  const r = []
+  for (const c of classes) {
+    if (!c) continue
+    if (typeof c === 'string') { r.push(c); continue }
+    for (const [k, v] of Object.entries(c)) if (v) r.push(k)
+  }
+  return r.join(' ')
+}
+
+export function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms) } }
+
+export function throttle(fn, ms) { let last = 0; return (...a) => { const n = Date.now(); if (n - last >= ms) { last = n; fn(...a) } } }
+
+export function range(n) { return Array.from({ length: n }, (_, i) => i) }
+
+export function pick(obj, keys) { const r = {}; for (const k of keys) r[k] = obj[k]; return r }
+
+export function omit(obj, keys) { const r = { ...obj }; for (const k of keys) delete r[k]; return r }
+
+export function invariant(cond, msg) { if (!cond) throw new Error('Invariant: ' + msg) }`,
+
+    'src/lib/logger.ts': `const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 }
+
+class Logger {
+  constructor() { this.level = 'info'; this.entries = []; this.max = 1000 }
+  setLevel(l) { this.level = l }
+  _log(level, ctx, msg, data) {
+    if (LEVELS[level] < LEVELS[this.level]) return
+    const entry = { level, ctx, msg, ts: new Date().toISOString(), data }
+    this.entries.push(entry)
+    if (this.entries.length > this.max) this.entries.shift()
+    console[level]('[' + ctx + ']', msg, data ?? '')
+  }
+  debug(ctx, msg, d) { this._log('debug', ctx, msg, d) }
+  info(ctx, msg, d) { this._log('info', ctx, msg, d) }
+  warn(ctx, msg, d) { this._log('warn', ctx, msg, d) }
+  error(ctx, msg, d) { this._log('error', ctx, msg, d) }
+  getEntries() { return [...this.entries] }
+  clear() { this.entries = [] }
+}
+
+export const logger = new Logger()`,
+
+    'README.md': `# Meu Projeto
+
+## Instalação
+
+npm install
+
+## Uso
+
+import { Button, Card, Modal, Table, Form } from './src/components'
+import { cn, debounce } from './src/lib/utils'
+import { logger } from './src/lib/logger'
+
+## Componentes
+
+- Button: Botão com variantes (primary, secondary, outline, ghost)
+- Card: Card com variantes (default, elevated, outlined, flat)
+- Modal: Modal com suporte a tecla Escape
+- Table: Tabela com suporte a striped e row click
+- Form: Formulário com validação automática
+
+## Utilitários
+
+- cn: Junta classes CSS
+- debounce: Debounce de funções
+- throttle: Throttle de funções
+- logger: Logger estruturado com níveis`
+  }
+
+  fileStore.clear()
+  for (const [path, content] of Object.entries(samples)) {
+    fileStore.set(path, new TextEncoder().encode(content))
+  }
+  renderFiles()
+  log(`📦 ${Object.keys(samples).length} arquivos de exemplo carregados`, 'ok')
+}
+
+// Init
+log('SupZIP Playground pronto! Carregue arquivos ou use "Carregar exemplos".', 'info')
+log('CDC Buzhash + SHA-256 + gzip (fflate)', 'info')
+</script>
+</body>
+</html>

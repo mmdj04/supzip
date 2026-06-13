@@ -53,9 +53,10 @@ body {
 .stat-box.orig .value { color: var(--accent); }
 .stat-box.dedup .value { color: var(--green); }
 .stat-box.comp .value { color: var(--orange); }
-.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--border); gap: 8px; }
 .detail-row:last-child { border-bottom: none; }
-.detail-row .label { color: var(--text2); }
+.detail-row .label { color: var(--text2); min-width: 50px; }
+.detail-row span:last-child { text-align: right; min-width: 60px; }
 #log { max-height: 200px; overflow-y: auto; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 12px; background: #010409; border-radius: 6px; padding: 8px; margin-top: 12px; }
 #log div { padding: 2px 0; }
 #log .info { color: var(--accent); }
@@ -289,6 +290,7 @@ async function runPack() {
 
     const tags = []
     let compBytes = 0
+    const tagStats = []
 
     for (const [tag, files] of groups) {
       const blobs = []
@@ -302,6 +304,7 @@ async function runPack() {
       const blob = concatU8(blobs)
       const compressed = fflate.gzipSync(blob, { level: 9 })
       tags.push({ tag, flags: FLAG_COMPRESSED, fields, blobSize: blob.length, data: compressed })
+      tagStats.push({ tag, files: files.length, orig: blob.length, comp: compressed.length, ratio: blob.length / compressed.length })
       compBytes += compressed.length
     }
 
@@ -312,11 +315,21 @@ async function runPack() {
     document.getElementById('dedupVal').textContent = 'N/A'
     document.getElementById('compVal').textContent = `${ratio.toFixed(2)}x`
 
+    const tagRows = tagStats
+      .sort((a, b) => b.orig - a.orig)
+      .map(t => {
+        const r = t.ratio < 1 ? `${(1/t.ratio).toFixed(2)}x` : `${t.ratio.toFixed(2)}x`
+        return `<div class="detail-row"><span class="label">${t.tag}</span><span>${t.files} files</span><span>${fmt(t.orig)} → ${fmt(t.comp)}</span><span><strong>${r}</strong></span></div>`
+      }).join('')
+
     document.getElementById('details').innerHTML = `
-      <div class="detail-row"><span class="label">Arquivos</span><span>${fileStore.size}</span></div>
-      <div class="detail-row"><span class="label">Original</span><span>${fmt(origBytes)}</span></div>
-      <div class="detail-row"><span class="label">Comprimido</span><span>${fmt(archiveBlob.size)}</span></div>
-      <div class="detail-row"><span class="label">Ratio total</span><span><strong>${(origBytes / archiveBlob.size).toFixed(2)}x</strong></span></div>
+      <div class="detail-row" style="color:var(--text2);border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px">
+        <span class="label">Arquivos</span><span>${fileStore.size}</span><span>Original</span><span><strong>${fmt(origBytes)}</strong></span>
+      </div>
+      ${tagRows}
+      <div class="detail-row" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
+        <span class="label">Total</span><span></span><span>${fmt(compBytes)}</span><span><strong>${ratio.toFixed(2)}x</strong></span>
+      </div>
     `
 
     window._archiveBlob = archiveBlob

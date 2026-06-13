@@ -8,12 +8,13 @@ import type { FileEntry } from './types.js'
 export interface PackOptions {
   includeExts?: string[]
   excludeDirs?: string[]
-  lineDedup?: boolean
 }
 
 export async function pack(inputDir: string, outputFile: string, options: PackOptions = {}): Promise<void> {
-  const files = scanFiles(inputDir, options.includeExts ?? DEFAULT_INCLUDE_EXTS, options.excludeDirs ?? DEFAULT_EXCLUDE_DIRS)
-  console.log(`Found ${files.length} files`)
+  const exts = options.includeExts ?? DEFAULT_INCLUDE_EXTS
+  const files = scanFiles(inputDir, exts, options.excludeDirs ?? DEFAULT_EXCLUDE_DIRS)
+  console.log(`Found ${files.length} supported files (extensions: ${exts.join(', ')})`)
+  console.log(`(Unsupported files are ignored — only the above extensions are compressed)`)
 
   const zstdAvail = await isZstdAvailable()
   console.log(`Zstandard: ${zstdAvail ? 'available' : 'NOT available (falling back to brotli)'}`)

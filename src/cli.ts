@@ -9,7 +9,8 @@ const program = new Command()
 
 program
   .name('supz')
-  .description('Ultra-efficient code compressor — per-language concatenation + Zstd')
+  .description(`Ultra-efficient code compressor — per-language concatenation + Zstd
+Supported: ${DEFAULT_INCLUDE_EXTS.join(', ')}`)
   .version('0.2.0')
 
 program

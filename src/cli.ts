@@ -15,8 +15,8 @@ Supported: ${DEFAULT_INCLUDE_EXTS.join(', ')}`)
 
 program
   .command('pack')
-  .description('Pack a directory into a .supz archive')
-  .argument('<input>', 'Input directory to compress')
+  .description('Pack a directory or .zip into a .supz archive')
+  .argument('<input>', 'Input directory or .zip file to compress')
   .option('-o, --output <file>', 'Output archive file', 'archive.supz')
   .option('-e, --extensions <exts>', 'Comma-separated extensions to include', (v) => v.split(',').map(s => s.trim().startsWith('.') ? s.trim() : `.${s.trim()}`))
   .option('-x, --exclude <dirs>', 'Comma-separated directories to exclude', (v) => v.split(',').map(s => s.trim()))

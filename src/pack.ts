@@ -1,4 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdtemp } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import AdmZip from 'adm-zip'
 import { scanFiles, formatBytes } from './utils.js'
 import { getLangTag, DEFAULT_INCLUDE_EXTS, DEFAULT_EXCLUDE_DIRS } from './types.js'
 import { compressBlob, isZstdAvailable } from './dict.js'
@@ -10,9 +13,21 @@ export interface PackOptions {
   excludeDirs?: string[]
 }
 
-export async function pack(inputDir: string, outputFile: string, options: PackOptions = {}): Promise<void> {
+async function resolveInput(input: string): Promise<{ dir: string; cleanup?: () => Promise<void> }> {
+  if (input.endsWith('.zip')) {
+    const zip = new AdmZip(input)
+    const tmp = await mkdtemp(join(tmpdir(), 'supz-zip-'))
+    zip.extractAllTo(tmp, true)
+    console.log(`Extracted .zip to ${tmp}`)
+    return { dir: tmp, cleanup: async () => { /* tmp cleans on process exit */ } }
+  }
+  return { dir: input }
+}
+
+export async function pack(inputArg: string, outputFile: string, options: PackOptions = {}): Promise<void> {
+  const { dir, cleanup } = await resolveInput(inputArg)
   const exts = options.includeExts ?? DEFAULT_INCLUDE_EXTS
-  const files = scanFiles(inputDir, exts, options.excludeDirs ?? DEFAULT_EXCLUDE_DIRS)
+  const files = scanFiles(dir, exts, options.excludeDirs ?? DEFAULT_EXCLUDE_DIRS)
   console.log(`Found ${files.length} supported files (extensions: ${exts.join(', ')})`)
   console.log(`(Unsupported files are ignored — only the above extensions are compressed)`)
 

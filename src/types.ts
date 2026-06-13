@@ -4,9 +4,30 @@ export interface FileEntry {
   ext: string
 }
 
-export interface FileIndex {
-  path: string
-  chunkHashes: Buffer[]
+export interface TagBlob {
+  tag: string
+  files: Array<{ path: string; data: Buffer }>
+}
+
+export interface ArchiveDataV2 {
+  version: 2
+  tags: Array<{
+    tag: string
+    fields: Array<{
+      path: string
+      offset: number
+      length: number
+    }>
+    blobSize: number
+    compressedBlob: Buffer
+  }>
+}
+
+export interface ArchiveData {
+  version: 1
+  dicts: DictEntry[]
+  chunks: ChunkEntry[]
+  files: FileIndex[]
 }
 
 export interface DictEntry {
@@ -20,21 +41,16 @@ export interface ChunkEntry {
   compressedData: Buffer
 }
 
-export interface ArchiveData {
-  dicts: DictEntry[]
-  chunks: ChunkEntry[]
-  files: FileIndex[]
+export interface FileIndex {
+  path: string
+  chunkHashes: Buffer[]
 }
 
 export interface Stats {
   fileCount: number
   originalBytes: number
-  uniqueChunkBytes: number
   compressedBytes: number
-  dictBytes: number
-  dedupRatio: number
-  compressionRatio: number
-  overallRatio: number
+  ratio: number
 }
 
 export const LANG_TAGS: Record<string, string> = {

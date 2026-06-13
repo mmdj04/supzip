@@ -128,100 +128,29 @@ function r32LE(buf, off) { return new DataView(buf.buffer, off, 4).getUint32(0, 
 function utf8Enc(s) { return new TextEncoder().encode(s) }
 function utf8Dec(buf) { return new TextDecoder().decode(buf) }
 
-// ===== BUZHASH CDC (content-defined chunking) =====
-const WINDOW = 48
-const TABLE = new Uint32Array(256)
-const ROT_TABLE = new Uint32Array(256)
-;(() => {
-  for (let i = 0; i < 256; i++) {
-    let v = ((i * 1103515245 + 12345) >>> 0)
-    v = ((v << 16) | (v >>> 16)) >>> 0
-    TABLE[i] = v
-    let rv = v
-    for (let j = 0; j < WINDOW - 1; j++) rv = ((rv << 1) | (rv >>> 31)) >>> 0
-    ROT_TABLE[i] = rv
-  }
-})()
-
-function chunkData(data, opts = {}) {
-  const avg = opts.avgChunkSize || 4096, minS = opts.minChunkSize || 1024, maxS = opts.maxChunkSize || 16384
-  const bits = Math.round(Math.log2(avg)), mask = (1 << bits) - 1
-  const len = data.length
-  if (len <= maxS) { return [data] }
-  const out = []
-  let cut = 0
-  while (cut < len) {
-    const end = findBoundary(data, cut, len, minS, maxS, mask)
-    out.push(data.subarray(cut, end))
-    cut = end
-  }
-  return out
-}
-
-function findBoundary(data, start, end, minS, maxS, mask) {
-  if (start + maxS >= end) return end
-  const sStart = start + minS, sEnd = Math.min(start + maxS, end)
-  if (sStart >= sEnd) return sEnd
-  let h = initHash(data, sStart), pos = sStart
-  while (pos < sEnd) {
-    if ((h & mask) === 0) return pos
-    pos++
-    if (pos < sEnd) h = slideHash(h, data[pos - WINDOW - 1], data[pos - 1])
-  }
-  return sEnd
-}
-
-function initHash(data, pos) {
-  const w = new Uint8Array(WINDOW)
-  w.set(data.subarray(pos - WINDOW, pos))
-  let h = 0
-  for (let i = 0; i < WINDOW; i++) { h = ((h << 1) | (h >>> 31)) >>> 0; h ^= TABLE[w[i]] }
-  return h >>> 0
-}
-
-function slideHash(h, outB, inB) {
-  h ^= ROT_TABLE[outB]; h = ((h << 1) | (h >>> 31)) >>> 0; h ^= TABLE[inB]
-  return h >>> 0
-}
-
-// ===== SHA-256 (Web Crypto) =====
-async function sha256(data) {
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', data))
-}
-
-// ===== ARCHIVE FORMAT =====
+// ===== ARCHIVE FORMAT V2 =====
 function hex(h) { return Array.from(h).map(b => b.toString(16).padStart(2,'0')).join('') }
 
-async function buildArchive(files, chunks) {
+async function buildArchive(tags) {
   const parts = []
   const push = b => parts.push(b)
+  const wstr = s => { const b = utf8Enc(s); push(u32LE(b.length)); push(b) }
 
-  push(new TextEncoder().encode('SUPZ'))
-  push(u32LE(1))
+  push(utf8Enc('SUPZ'))
+  push(u32LE(2))
   push(u32LE(0))
 
-  push(u32LE(0))
-
-  const chunkArr = Array.from(chunks.entries())
-  push(u32LE(chunkArr.length))
-  for (const [hashHex, { data, tag }] of chunkArr) {
-    const hb = new Uint8Array(32)
-    for (let i = 0; i < 32; i++) hb[i] = parseInt(hashHex.slice(i * 2, i * 2 + 2), 16)
-    push(hb)
-    const tb = utf8Enc(tag)
-    push(new Uint8Array([tb.length]))
-    push(tb)
-    push(u32LE(data.length))
-    push(data)
-  }
-
-  push(u32LE(files.length))
-  for (const f of files) {
-    const pb = utf8Enc(f.path)
-    push(u32LE(pb.length))
-    push(pb)
-    push(u32LE(f.hashes.length))
-    for (const h of f.hashes) push(h)
+  for (const { tag, fields, blobSize, compressedBlob } of tags) {
+    wstr(tag)
+    push(u32LE(blobSize))
+    push(u32LE(fields.length))
+    for (const f of fields) {
+      wstr(f.path)
+      push(u32LE(f.offset))
+      push(u32LE(f.length))
+    }
+    push(u32LE(compressedBlob.length))
+    push(compressedBlob)
   }
 
   return new Blob([new Blob(parts)])
@@ -233,42 +162,32 @@ async function parseArchive(buf) {
   if (magic !== 'SUPZ') throw new Error('Invalid archive')
   o += 4
   const ver = r32LE(buf, o); o += 4
-  if (ver !== 1) throw new Error('Unsupported version')
+  if (ver < 2) throw new Error('Unsupported version (only v2+)')
   o += 4
 
-  const numDicts = r32LE(buf, o); o += 4
-  const dicts = new Map()
-  for (let i = 0; i < numDicts; i++) {
-    const tl = buf[o]; o += 1
-    const tag = utf8Dec(buf.subarray(o, o + tl)); o += tl
-    const dl = r32LE(buf, o); o += 4
-    dicts.set(tag, buf.subarray(o, o + dl))
-    o += dl
+  const tags = []
+
+  while (o < buf.length) {
+    const tagLen = r32LE(buf, o); o += 4
+    const tag = utf8Dec(buf.subarray(o, o + tagLen)); o += tagLen
+    const blobSize = r32LE(buf, o); o += 4
+    const numFiles = r32LE(buf, o); o += 4
+
+    const fields = []
+    for (let i = 0; i < numFiles; i++) {
+      const pl = r32LE(buf, o); o += 4
+      const path = utf8Dec(buf.subarray(o, o + pl)); o += pl
+      const offset = r32LE(buf, o); o += 4
+      const length = r32LE(buf, o); o += 4
+      fields.push({ path, offset, length })
+    }
+
+    const compLen = r32LE(buf, o); o += 4
+    const compressedBlob = buf.subarray(o, o + compLen); o += compLen
+    tags.push({ tag, fields, blobSize, compressedBlob })
   }
 
-  const numChunks = r32LE(buf, o); o += 4
-  const chunks = new Map()
-  for (let i = 0; i < numChunks; i++) {
-    const hash = buf.subarray(o, o + 32); o += 32
-    const tl = buf[o]; o += 1
-    const tag = utf8Dec(buf.subarray(o, o + tl)); o += tl
-    const dl = r32LE(buf, o); o += 4
-    chunks.set(hex(hash), { data: buf.subarray(o, o + dl), tag })
-    o += dl
-  }
-
-  const numFiles = r32LE(buf, o); o += 4
-  const files = []
-  for (let i = 0; i < numFiles; i++) {
-    const pl = r32LE(buf, o); o += 4
-    const path = utf8Dec(buf.subarray(o, o + pl)); o += pl
-    const nh = r32LE(buf, o); o += 4
-    const hashes = []
-    for (let j = 0; j < nh; j++) { hashes.push(buf.subarray(o, o + 32)); o += 32 }
-    files.push({ path, hashes })
-  }
-
-  return { files, chunks, dicts }
+  return { tags }
 }
 
 // ===== PACK =====
@@ -326,6 +245,15 @@ dz.addEventListener('dragleave', () => dz.classList.remove('dragover'))
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); handleFiles(e.dataTransfer.files) })
 dz.addEventListener('click', () => document.getElementById('fileInput').click())
 
+function getTag(path) {
+  return path.endsWith('.ts') || path.endsWith('.tsx') ? '.ts' :
+         path.endsWith('.js') || path.endsWith('.jsx') ? '.js' :
+         path.endsWith('.md') ? '.md' :
+         path.endsWith('.html') ? '.html' :
+         path.endsWith('.css') ? '.css' :
+         path.endsWith('.json') ? '.json' : '__'
+}
+
 async function runPack() {
   if (fileStore.size === 0) return
   const btn = document.getElementById('packBtn')
@@ -333,62 +261,51 @@ async function runPack() {
   log('Iniciando compressão...')
 
   try {
-    const chunks = new Map()
-    const files = []
+    const grouped = new Map()
     let origBytes = 0
 
     for (const [path, data] of fileStore) {
       origBytes += data.length
-      const tag = path.endsWith('.ts') || path.endsWith('.tsx') ? '.ts' :
-                  path.endsWith('.js') || path.endsWith('.jsx') ? '.js' :
-                  path.endsWith('.md') ? '.md' :
-                  path.endsWith('.html') ? '.html' :
-                  path.endsWith('.css') ? '.css' :
-                  path.endsWith('.json') ? '.json' : '__'
-      const pieces = chunkData(data)
-      const hashes = []
-
-      for (const piece of pieces) {
-        const h = await sha256(piece)
-        const hh = hex(h)
-        hashes.push(h)
-        if (!chunks.has(hh)) chunks.set(hh, { data: piece, tag })
-      }
-
-      files.push({ path, hashes })
+      const tag = getTag(path)
+      if (!grouped.has(tag)) grouped.set(tag, [])
+      grouped.get(tag).push({ path, data })
     }
 
-    log(`Original: ${fmt(origBytes)} — ${chunks.size} chunks únicos de ${files.length} arquivos`, 'ok')
+    log(`Original: ${fmt(origBytes)} — ${fileStore.size} arquivos em ${grouped.size} grupos`, 'ok')
 
+    const tags = []
     let compBytes = 0
-    for (const [hh, { data, tag }] of chunks) {
-      const gz = fflate.gzipSync(data, { level: 9 })
-      chunks.set(hh, { data: gz, tag })
-      compBytes += gz.length
+
+    for (const [tag, files] of grouped) {
+      const blobs = []
+      const fields = []
+      let offset = 0
+      for (const f of files) {
+        blobs.push(f.data)
+        fields.push({ path: f.path, offset, length: f.data.length })
+        offset += f.data.length
+      }
+      const blob = concatU8(blobs)
+      const compressedBlob = fflate.gzipSync(blob, { level: 9 })
+      tags.push({ tag, fields, blobSize: blob.length, compressedBlob })
+      compBytes += compressedBlob.length
     }
 
-    log(`Comprimido: ${fmt(compBytes)} (${((1 - compBytes / origBytes) * 100).toFixed(1)}% menor)`)
-
-    const blob = await buildArchive(files, chunks)
-    const totalBytes = blob.size + chunks.size * 33
-
-    const dedupX = (origBytes / [...chunks.values()].reduce((s, c) => s + c.data.length, 0)).toFixed(2)
-    const compX = (origBytes / (compBytes)).toFixed(2)
+    const archiveBlob = await buildArchive(tags)
+    const ratio = origBytes / compBytes
 
     document.getElementById('origVal').textContent = fmt(origBytes)
-    document.getElementById('dedupVal').textContent = `${dedupX}x`
-    document.getElementById('compVal').textContent = `${compX}x`
+    document.getElementById('dedupVal').textContent = 'N/A'
+    document.getElementById('compVal').textContent = `${ratio.toFixed(2)}x`
 
     document.getElementById('details').innerHTML = `
-      <div class="detail-row"><span class="label">Arquivos</span><span>${files.length}</span></div>
-      <div class="detail-row"><span class="label">Chunks únicos</span><span>${chunks.size}</span></div>
+      <div class="detail-row"><span class="label">Arquivos</span><span>${fileStore.size}</span></div>
       <div class="detail-row"><span class="label">Original</span><span>${fmt(origBytes)}</span></div>
-      <div class="detail-row"><span class="label">Comprimido</span><span>${fmt(totalBytes)}</span></div>
-      <div class="detail-row"><span class="label">Ratio total</span><span><strong>${(origBytes / totalBytes).toFixed(2)}x</strong></span></div>
+      <div class="detail-row"><span class="label">Comprimido</span><span>${fmt(archiveBlob.size)}</span></div>
+      <div class="detail-row"><span class="label">Ratio total</span><span><strong>${(origBytes / archiveBlob.size).toFixed(2)}x</strong></span></div>
     `
 
-    window._archiveBlob = blob
-    window._archiveFiles = files.length
+    window._archiveBlob = archiveBlob
     document.getElementById('downloadBtn').disabled = false
     log('✅ Pack concluído!', 'ok')
   } catch (e) {
@@ -396,6 +313,14 @@ async function runPack() {
     console.error(e)
   }
   btn.disabled = false; btn.textContent = '⚡ Pack'
+}
+
+function concatU8(arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0)
+  const result = new Uint8Array(total)
+  let offset = 0
+  for (const a of arrays) { result.set(a, offset); offset += a.length }
+  return result
 }
 
 function downloadArchive() {
@@ -431,16 +356,12 @@ async function runUnpack() {
     const archive = await parseArchive(_loadedArchive)
     const extracted = []
 
-    for (const f of archive.files) {
-      const pieces = []
-      for (const h of f.hashes) {
-        const hh = hex(h)
-        const entry = archive.chunks.get(hh)
-        if (!entry) throw new Error(`Chunk ${hh} não encontrado`)
-        const raw = fflate.gunzipSync(entry.data)
-        pieces.push(raw)
+    for (const tag of archive.tags) {
+      const blob = fflate.gunzipSync(tag.compressedBlob)
+      for (const f of tag.fields) {
+        const fileData = blob.subarray(f.offset, f.offset + f.length)
+        extracted.push({ path: f.path, data: new Blob([fileData]) })
       }
-      extracted.push({ path: f.path, data: new Blob(pieces) })
     }
 
     document.getElementById('unpackResult').innerHTML = `

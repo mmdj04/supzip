@@ -1,7 +1,7 @@
 {
   "name": "supzip",
   "version": "0.1.0",
-  "description": "Ultra-efficient code compressor with CDC deduplication + per-language Zstandard dictionaries",
+  "description": "Ultra-efficient code compressor — per-language concatenation + Zstd/brotli/gzip",
   "type": "module",
   "main": "dist/cli.js",
   "bin": {

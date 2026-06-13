@@ -1,164 +1,89 @@
 import { spawn, execFile } from 'node:child_process'
-import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { brotliCompress, brotliDecompress, gunzip, constants as ZLIB } from 'node:zlib'
 import { join } from 'node:path'
-import { gzip, gunzip } from 'node:zlib'
 import { promisify } from 'node:util'
 
-const gzipAsync = promisify(gzip)
+const brCompress = promisify(brotliCompress)
+const brDecompress = promisify(brotliDecompress)
 const gunzipAsync = promisify(gunzip)
 const execFileAsync = promisify(execFile)
 
 export const ZSTD_COMP_LEVEL = 19
 
-let _zstdPath: string | null | undefined = undefined
-
-async function findZstd(): Promise<string | null> {
-  if (_zstdPath !== undefined) return _zstdPath
-  try {
-    const { stdout } = await execFileAsync('which', ['zstd'])
-    _zstdPath = stdout.trim()
-  } catch {
-    _zstdPath = null
-  }
-  return _zstdPath
-}
+let _zstdAvailable: boolean | null = null
 
 export async function isZstdAvailable(): Promise<boolean> {
-  return (await findZstd()) !== null
+  if (_zstdAvailable !== null) return _zstdAvailable
+  _zstdAvailable = await checkZstd()
+  return _zstdAvailable
 }
 
-export async function trainDictionary(samples: Buffer[], tag: string): Promise<Buffer | null> {
-  const zstdPath = await findZstd()
-  if (!zstdPath || samples.length < 4) return null
-
-  const tmpDir = await mkdtemp(join(tmpdir(), 'supz-dict-'))
+async function checkZstd(): Promise<boolean> {
+  for (const candidate of ['zstd', '/usr/local/bin/zstd', join(process.env.HOME || '', '.local/bin/zstd')]) {
+    try { await execFileAsync(candidate, ['--version']); return true } catch {}
+  }
   try {
-    const sampleFiles: string[] = []
-    for (let i = 0; i < samples.length; i++) {
-      const f = join(tmpDir, `s${i}`)
-      await writeFile(f, samples[i])
-      sampleFiles.push(f)
-    }
-
-    const dictFile = join(tmpDir, `dict-${tag}`)
-    const sampleArg = sampleFiles.length <= 50
-      ? sampleFiles
-      : [`--train-sets=${sampleFiles.slice(0, 50).join(',')}`]
-
-    await execFileAsync(zstdPath, [
-      '--train',
-      ...sampleFiles.slice(0, 100),
-      '-o', dictFile,
-      '--maxdict', '65536',
-      '--fast',
-    ], { timeout: 30000 })
-
-    return readFile(dictFile)
-  } catch {
-    return null
-  } finally {
-    rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-  }
+    const { stdout } = await execFileAsync('python3', ['-c', 'import zstandard; print(1)'])
+    return stdout.trim() === '1'
+  } catch { return false }
 }
 
-export async function compressWithDict(data: Buffer, dict: Buffer | null, tag: string): Promise<Buffer> {
-  const zstdPath = await findZstd()
-
-  if (zstdPath && dict) {
-    return zstdCompress(data, zstdPath, dict, tag)
-  }
-
-  return gzipAsync(data, { level: 9 })
-}
-
-function detectCompression(data: Buffer): 'gzip' | 'zstd' {
-  if (data[0] === 0x1F && data[1] === 0x8B) return 'gzip'
-  if (data[0] === 0x28 && data[1] === 0xB5) return 'zstd'
-  return 'gzip'
-}
-
-export async function decompressWithDict(data: Buffer, dict: Buffer | null, tag: string): Promise<Buffer> {
-  const fmt = detectCompression(data)
-
-  if (fmt === 'zstd') {
-    const zstdPath = await findZstd()
-    if (zstdPath && dict) {
-      return zstdDecompress(data, zstdPath, dict)
-    }
-  }
-
-  return gunzipAsync(data)
-}
-
-function zstdCompress(data: Buffer, zstdPath: string, dict: Buffer, _tag: string): Promise<Buffer> {
-  const tmpDir = join(tmpdir(), `supz-comp-${process.pid}-${Date.now()}`)
-
-  return new Promise<Buffer>(async (resolve, reject) => {
-    try {
-      await writeFile(tmpDir, dict)
-    } catch (e) { reject(e); return }
-
-    const proc = spawn(zstdPath, [`-${ZSTD_COMP_LEVEL}`, '-D', tmpDir, '-c', '--ultra'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    const chunks: Buffer[] = []
-    proc.stdout.on('data', (c: Buffer) => chunks.push(c))
-    proc.stderr.on('data', () => {})
-
-    let closed = false
-    proc.on('close', async (code) => {
-      if (closed) return
-      closed = true
-      await rm(tmpDir, { force: true }).catch(() => {})
-      if (code === 0) resolve(Buffer.concat(chunks))
+function pythonCompress(data: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('python3', ['-c', `
+import sys, zstandard as zstd
+sys.stdout.buffer.write(zstd.ZstdCompressor(level=${ZSTD_COMP_LEVEL}).compress(sys.stdin.buffer.read()))
+`])
+    const out: Buffer[] = []
+    proc.stdout.on('data', (c: Buffer) => out.push(c))
+    proc.on('close', (code) => {
+      if (code === 0) resolve(Buffer.concat(out))
       else reject(new Error(`zstd compress exited ${code}`))
     })
-    proc.on('error', async (e) => {
-      if (closed) return
-      closed = true
-      await rm(tmpDir, { force: true }).catch(() => {})
-      reject(e)
-    })
-
-    proc.stdin.write(data)
-    proc.stdin.end()
+    proc.on('error', reject)
+    proc.stdin.end(data)
   })
 }
 
-function zstdDecompress(data: Buffer, zstdPath: string, dict: Buffer): Promise<Buffer> {
-  const tmpDir = join(tmpdir(), `supz-decomp-${process.pid}-${Date.now()}`)
+export async function compressBlob(data: Buffer): Promise<Buffer> {
+  const haveZstd = await isZstdAvailable()
+  if (!haveZstd) {
+    return brCompress(data, { params: { [ZLIB.BROTLI_PARAM_QUALITY]: 11 } })
+  }
 
-  return new Promise<Buffer>(async (resolve, reject) => {
-    try {
-      await writeFile(tmpDir, dict)
-    } catch (e) { reject(e); return }
+  try {
+    return await pythonCompress(data)
+  } catch {
+    return brCompress(data, { params: { [ZLIB.BROTLI_PARAM_QUALITY]: 11 } })
+  }
+}
 
-    const proc = spawn(zstdPath, ['-D', tmpDir, '-d', '-c'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    const chunks: Buffer[] = []
-    proc.stdout.on('data', (c: Buffer) => chunks.push(c))
-    proc.stderr.on('data', () => {})
-
-    let closed = false
-    proc.on('close', async (code) => {
-      if (closed) return
-      closed = true
-      await rm(tmpDir, { force: true }).catch(() => {})
-      if (code === 0) resolve(Buffer.concat(chunks))
+function pythonDecompress(data: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('python3', ['-c', `
+import sys, zstandard as zstd
+sys.stdout.buffer.write(zstd.ZstdDecompressor().decompress(sys.stdin.buffer.read()))
+`])
+    const out: Buffer[] = []
+    proc.stdout.on('data', (c: Buffer) => out.push(c))
+    proc.on('close', (code) => {
+      if (code === 0) resolve(Buffer.concat(out))
       else reject(new Error(`zstd decompress exited ${code}`))
     })
-    proc.on('error', async (e) => {
-      if (closed) return
-      closed = true
-      await rm(tmpDir, { force: true }).catch(() => {})
-      reject(e)
-    })
-
-    proc.stdin.write(data)
-    proc.stdin.end()
+    proc.on('error', reject)
+    proc.stdin.end(data)
   })
+}
+
+export async function decompressBlob(data: Buffer): Promise<Buffer> {
+  const isZstd = data[0] === 0x28 && data[1] === 0xB5
+  const isBrotli = data[0] === 0xCE && data[1] === 0xB2
+  const isGzip = data[0] === 0x1F && data[1] === 0x8B
+
+  if (isZstd) {
+    return pythonDecompress(data)
+  }
+  if (isBrotli) return brDecompress(data)
+  if (isGzip) return gunzipAsync(data)
+  throw new Error('Unknown compression format')
 }

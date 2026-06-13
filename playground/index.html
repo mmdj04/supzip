@@ -275,19 +275,14 @@ async function runPack() {
   log('Iniciando compressão...')
 
   try {
-    const textGroups = new Map()
-    const rawFiles = []
+    const groups = new Map()
     let origBytes = 0
 
     for (const [path, data] of fileStore) {
       origBytes += data.length
       const tag = getTag(path)
-      if (tag === RAW_TAG) {
-        rawFiles.push({ path, data })
-      } else {
-        if (!textGroups.has(tag)) textGroups.set(tag, [])
-        textGroups.get(tag).push({ path, data })
-      }
+      if (!groups.has(tag)) groups.set(tag, [])
+      groups.get(tag).push({ path, data })
     }
 
     log(`Original: ${fmt(origBytes)} — ${fileStore.size} arquivos`, 'ok')
@@ -295,7 +290,7 @@ async function runPack() {
     const tags = []
     let compBytes = 0
 
-    for (const [tag, files] of textGroups) {
+    for (const [tag, files] of groups) {
       const blobs = []
       const fields = []
       let offset = 0
@@ -308,20 +303,6 @@ async function runPack() {
       const compressed = fflate.gzipSync(blob, { level: 9 })
       tags.push({ tag, flags: FLAG_COMPRESSED, fields, blobSize: blob.length, data: compressed })
       compBytes += compressed.length
-    }
-
-    if (rawFiles.length > 0) {
-      const blobs = []
-      const fields = []
-      let offset = 0
-      for (const f of rawFiles) {
-        blobs.push(f.data)
-        fields.push({ path: f.path, offset, length: f.data.length })
-        offset += f.data.length
-      }
-      const blob = concatU8(blobs)
-      tags.push({ tag: RAW_TAG, flags: 0, fields, blobSize: blob.length, data: blob })
-      compBytes += blob.length
     }
 
     const archiveBlob = await buildArchive(tags)

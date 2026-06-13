@@ -58,27 +58,20 @@ export async function pack(inputArg: string, outputFile: string, options: PackOp
   const zstdAvail = await isZstdAvailable()
   console.log(`Zstandard: ${zstdAvail ? 'available' : 'NOT available (falling back to brotli)'}`)
 
-  // Group files by tag
-  const textGroups = new Map<string, typeof allFiles>()
-  const rawFiles: typeof allFiles = []
-
+  // Group all files by tag (text gets language tag, others get extension)
+  const groups = new Map<string, typeof allFiles>()
   for (const f of allFiles) {
-    if (SUPPORTED_EXTS.has(f.ext)) {
-      const tag = getLangTag(f.ext)
-      const list = textGroups.get(tag) ?? []
-      list.push(f)
-      textGroups.set(tag, list)
-    } else {
-      rawFiles.push(f)
-    }
+    const tag = SUPPORTED_EXTS.has(f.ext) ? getLangTag(f.ext) : f.ext || '__'
+    const list = groups.get(tag) ?? []
+    list.push(f)
+    groups.set(tag, list)
   }
 
   const tags: ArchiveDataV3['tags'] = []
   let totalOriginal = 0
   let totalCompressed = 0
 
-  // Compress text files per tag
-  for (const [tag, fileList] of textGroups) {
+  for (const [tag, fileList] of groups) {
     const blobs: Buffer[] = []
     const fields: Array<{ path: string; offset: number; length: number }> = []
     let offset = 0
@@ -98,33 +91,13 @@ export async function pack(inputArg: string, outputFile: string, options: PackOp
     console.log(`  ${tag}: ${fileList.length} files, ${formatBytes(blob.length)} → ${formatBytes(compressed.length)} (${(blob.length / compressed.length).toFixed(2)}x)`)
   }
 
-  // Store raw files as passthrough
-  if (rawFiles.length > 0) {
-    const blobs: Buffer[] = []
-    const fields: Array<{ path: string; offset: number; length: number }> = []
-    let offset = 0
-
-    for (const f of rawFiles) {
-      const data = await readFile(f.fullPath)
-      blobs.push(data)
-      fields.push({ path: f.relativePath, offset, length: data.length })
-      offset += data.length
-      totalOriginal += data.length
-    }
-
-    const blob = Buffer.concat(blobs)
-    tags.push({ tag: RAW_TAG, flags: 0, fields, blobSize: blob.length, data: blob })
-    totalCompressed += blob.length
-    console.log(`  ${RAW_TAG}: ${rawFiles.length} files, ${formatBytes(blob.length)} (passthrough, no compression)`)
-  }
-
   const archive = serializeArchiveV3({ version: 3, tags })
   await writeFile(outputFile, archive)
 
   const ratio = totalOriginal / Math.max(totalCompressed, 1)
 
   console.log(`\n📊 Summary:`)
-  console.log(`  Files:        ${allFiles.length} (${textGroups.size} text groups${rawFiles.length > 0 ? ` + ${rawFiles.length} raw` : ''})`)
+  console.log(`  Files:        ${allFiles.length}`)
   console.log(`  Original:     ${formatBytes(totalOriginal)}`)
   console.log(`  Compressed:   ${formatBytes(totalCompressed)} (${formatBytes(archive.length)} with index)`)
   console.log(`  Overall:      ${ratio.toFixed(2)}x`)
